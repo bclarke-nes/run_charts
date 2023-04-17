@@ -1,0 +1,190 @@
+---
+title: "![](../src/images/KLN_banner_v05_125.png) Introduction to run charts in R"
+subtitle: "a standalone training session"
+author: "Brendan Clarke, NHS Education for Scotland, [brendan.clarke2@nhs.scot](mailto:brendan.clarke2@nhs.scot)"
+date: "2023-04-17"
+format: 
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| echo: false
+#| warning: false
+library(pacman)
+p_load(tidyverse, NHSRplotthedots, NHSRdatasets, runcharter, glue)
+knitr::opts_chunk$set(echo = T, warning = F, message = F, results = "asis", fig.width = 7, fig.height = 4)
+```
+
+::: {.panel-tabset}
+## Run charts intro
+= a way of plotting time series data when you're interested in variation
+
+Good starter guide from [NHS England](https://www.england.nhs.uk/wp-content/uploads/2021/12/qsir-run-charts.pdf)
+
+### Terminology
++ common cause = controlled variation. Confusing name for chance!
++ special cause = real change over time
+
+### Elements
+
++ plot points against time
++ add median line of some/all data points
++ look at how points lie relative to the median
+
+
+## Simple run chart in `ggplot()`
+
+```{r}
+ae_attendances %>%
+  filter(org_code == "RF4" & type == "1") %>%
+  ggplot(aes(x=period, y=attendances)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(aes(yintercept=median(attendances))) 
+```
+
+We can turn that into a function fairly easily:
+
+```{r}
+run_chart <- function(org, cat) {
+
+  ae_attendances %>%
+    filter(org_code %in% {{org}} & type == "1") %>%
+    group_by(org_code) %>%
+    mutate(median = median({{cat}})) %>%
+    ggplot(aes(x=period, y={{cat}}, color=org_code)) +
+    geom_point() +
+    geom_line() +
+    geom_hline(aes(yintercept=median, color=org_code)) +
+    ggtitle(glue("{paste(org, collapse=' / ')} {deparse(substitute(cat))}")) +
+    theme(legend.position="none") +
+    facet_wrap(~ org_code, scales="free")
+}
+
+run_chart(c("RF4", "RJZ", "RVR", "RDD"), attendances)
+```
+
+## Interpreting run charts
+Lots to say, clearly, but four important features:
+
+### Shift
+
+7 or more points on one side of the median
+
+```{r}
+run_chart("RF4", attendances) +
+  geom_point(data = . %>% filter(period >= dmy("01/07/2018")), color="blue" ) +
+  geom_line(data = . %>% filter(period >= dmy("01/07/2018")), color="blue")
+```
+
+
+### Trend
+
+7 or more points going in the same direction
+
+```{r}
+run_chart("RJZ", breaches) +
+  geom_point(data = . %>% filter(period %within% interval(dmy("01/07/2017"), dmy("01/03/2018"))), color="blue") +
+  geom_line(data = . %>% filter(period %within% interval(dmy("01/07/2017"), dmy("01/03/2018"))), color="blue" )
+```
+
+### Run
+The number of times the line crosses the median. Too few runs indicates that special cause variation might be at play. Runs = count of crossing medians + 1:
+```{r}
+run_chart("RJZ", attendances) # 14 runs
+run_chart("RRV", breaches) # 7 runs
+run_chart("RWP", breaches) # 3 runs
+
+```
+
+### Astronomical point
+A by-inspection outlier:
+
+```{r}
+run_chart("RRK", breaches) # ?astronomical point
+run_chart("RQ3", breaches) # ?astronomical point
+run_chart("RA4", breaches) # probably not an astronomical point
+run_chart("RJC", breaches) # probably not an astronomical point
+```
+
+
+## NHSRplotthedots
+
+This section is intended as a demonstration of the NHSRplotthedots package, which provides a ggplot-like approach to building XmR charts that follow the [NHS Plot The Dots](https://www.england.nhs.uk/wp-content/uploads/2019/12/making-data-count-getting-started-2019.pdf) logic. 
+
+More theory: statistical process control
+
+Control limits = measure of variation in the data
+centre line = usually mean (sometimes median)
++- target lines
+15-20 data points minimum
+
+XmR chart = one type of SPC chart
+
+Slightly different interpretation [NHS England again](https://www.england.nhs.uk/wp-content/uploads/2022/02/qsir-statistical-process-control.pdf)
+
+special purpose variation if and only if one of the following four are found
+- point outwith control limits
+- run of >=7 on one side of mean / drift of >=7 in one direction
+- cyclic or trend pattern
+- many more or less that 2/3 of points in middle 1/3 of control region
+
+
+```{r}
+
+ae_attendances %>% 
+  filter(type == "1" & org_code=="RF4") %>% 
+  ptd_spc(value_field = "breaches", date_field = period, improvement_direction = "increase") 
+
+ae_attendances %>% 
+  filter(type == "1" & org_code=="RF4") %>% 
+  pivot_longer(c(admissions, attendances, breaches)) %>%
+  ptd_spc(value_field = "value", facet_field = "name", date_field = period, improvement_direction = "increase") %>%
+  plot(fixed_y_axis_multiple = FALSE, x_axis_breaks = "3 months", main_title="Super, thanks for asking")
+
+ae_attendances %>% 
+  filter(type == "1" & org_code=="RF4") %>% 
+  ptd_spc(value_field = "breaches", date_field = period, improvement_direction = "increase") %>%
+  plot(x_axis_breaks = "1 month", main_title="XmR chart of breaches", theme =)
+
+```
+
+It's also worth looking at the excellent [runcharter package](https://johnmackintosh.github.io/runcharter/) if you need to produce series of run charts as this package allows more control over faceted charts).
+
+## Runcharter
+
+```{r}
+set <- ae_attendances %>%
+  filter(org_code %in% c("RF4", "R1H", "RYX", "RQM") & type == "1") %>%
+  select(period, org_code, attendances)
+
+thing <- 
+  runcharter(
+  set,
+  med_rows = 13,
+  runlength = 9,
+  direction = "above",
+  datecol = period,
+  grpvar = org_code,
+  yval = attendances,
+  facet_cols = 2)
+
+thing$runchart
+
+runcharter(set,
+            runlength = 9,
+           direction = "below",
+           datecol = period, 
+           grpvar = org_code,
+           yval = attendances, 
+          chart_title = "Runs identified",
+          chart_subtitle = "Runs below the median signalling improvement")$runchart
+```
+
+
+
+
+
+
+:::
